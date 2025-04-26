@@ -63,7 +63,10 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
-
+static void *extend_heap(size_t words);
+static void *coalesce(void *bp);
+static void *find_fit(size_t asize);       // first fit으로 적절한 가용 블록 리턴
+static void place(void *bp, size_t asize); // 남은 블록 분할
 static char *heap_listp = NULL;  // 전역(정확히는 파일 내 전역) 변수로
 
 /* mm_malloc이나 mm_free를 호출하기 전에 mm_init 함수를 호출해서 힙을 초기화해줘야 한다 */
@@ -232,8 +235,8 @@ static void place(void* bp, size_t asize)
     }
     else // 할당하고 남은 공간이 2워드가 되지 않는다면 분할하지 않는다
     {
-        PUT(HDRP(bp), PACK(csize, 1)); // 헤더에 블록의 크기와 할당 비트 저장
-        PUT(FTRP(bp), PACK(csize, 1)); // 푸터에 블록의 크기와 할당 비트 저장
+        PUT(HDRP(bp), PACK(csize, 1)); // 헤더에 새 가용 블록의 크기와 할당 비트 저장
+        PUT(FTRP(bp), PACK(csize, 1)); // 푸터에 새 가용 블록의 크기와 할당 비트 저장
     }
 }
 
