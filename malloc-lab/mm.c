@@ -153,21 +153,43 @@ static void *coalesce(void *bp)
     return bp;
 }
 
-/*
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
-void *mm_malloc(size_t size)
+/* size 바이트의 메모리 블록을 요청한다.
+추가적인 요청들을 체크한 후 할당기는 요청한 블록 크기를 조절해서 헤더와 풋터를 위한 공간을 확보하고,
+더블 워드 요건을 만족시킨다. */
+void *mm_malloc(size_t size) // 사용자가 요청한 데이터의 크기
 {
-    int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *p = mem_sbrk(newsize);
-    if (p == (void *)-1)
-        return NULL;
+    size_t asize; // 헤더와 푸터를 더한 최소 크기의 블록
+    size_t extendsize; // 확장된 블록 크기
+    char *bp; // 현재 블록 위치
+
+    if (size == 0) // 사용자가 요청한 데이터의 크기가 0이라면
+    {
+        return NULL; // 확장 안함
+    }
+
+    if (size <= DSIZE) // 블록의 크기가 더블 워드 크기라면
+    {
+        asize = 2*DSIZE; // 더블 워드 16이고, 요청된 데이터가 16보다 작으므로 16을 더해줘서 32바이트짜리 블록을 만들어 준다.
+    }
     else
     {
-        *(size_t *)p = size;
-        return (void *)((char *)p + SIZE_T_SIZE);
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE); // 일반적인 규칙은 오버헤드 바이트를 추가하고, 인접 8의 배수로 반올림 한다.
     }
+
+    if ((bp = find_fit(asize)) != NULL) // 할당기가 요청한 크기를 조정한 후에 적절한 가용 블록을 가용 리스트에서 검색한다. 퍼스트 핏 방식으로
+    {
+        place(bp, asize); // 만일 맞는 블록을 찾으면 할당기는 요청한 블록을 배치하고, 옵션으로 초과 부분을 분할하고, 새롭게 할당한 블록을 반환한다.
+        return bp; 
+    }
+
+    extendsize = MAX(asize, CHUNKSIZE); // 4KB 확장
+    if ((bp = extend_heap(extendsize / WSIZE)) == NULL) // 만일 할당기가 맞는 블록을 찾지 못하면 힙을 새로운 가용 블록으로 확장한다.
+    {
+        return NULL;
+    }
+    place(bp, asize); // 요청한 블록을 이 새 가용 블록에 배치하고, 필요한 경우에 블록을 분할한다.
+
+    return bp; // 새롭게 할당한 블록의 포인터를 반환한다.
 }
 
 // 요청한 블록을 반환하고, 경계 태그 연결을 통해서 블록을 통합한다.
