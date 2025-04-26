@@ -115,32 +115,41 @@ static void *extend_heap(size_t words)
 
 static void *coalesce(void *bp)
 {
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    size_t size = GET_SIZE(HDRP(bp));
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // 이전 블록의 푸터에 저장된 size, alloc의 정보를 추출한 후 alloc의 정보만 저장한다.
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp))); // 다음 블록의 헤더에 저장된 size, alloc의 정보를 추출한 후 alloc의 정보만 저장한다.
+    size_t size = GET_SIZE(HDRP(bp)); // 현재 블록의 헤더에서 size의 정보를 추출해서 저장한다.
 
     /* case 1 */
-    if(prev_alloc && next_alloc)
+    if(prev_alloc && next_alloc) // 이전 블록과 다음 블록이 모두 할당되어 있다면 병합하지 않고, 그대로 bp를 반환한다.
     {
         return bp;
     }
 
     /* case 2 */
-    else if (prev_alloc && !next_alloc)
+    else if (prev_alloc && !next_alloc) // 이전 블록은 할당되어 있지만 다음 블록은 가용 상태일 때
     {
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT(HDRP(bp), PACK(size, 0));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp))); // 현재 블록의 크기와 다음 블록의 크기를 더한다.
+        PUT(HDRP(bp), PACK(size, 0)); // 현재 블록의 헤더에 블록 크기와 가용 여부를 저장한다.
+        PUT(FTRP(bp), PACK(size, 0)); // 현재 블록의 푸터에 블록 크기와 가용 여부를 저장한다. 현재 푸터에 블록의 크기를 변경했으므로 16바이트만큼 이동하기 때문에 현재 푸터에 저장하는 것이 맞다.   
     }
 
-    else
+    /* case 3 */
+    else if (!prev_alloc && next_alloc) // 이전 블록이 가용 상태이고, 다음 블록은 할당 상태이다.
     {
-        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-        bp = PREV_BLKP(bp);
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))); // 현재 블록의 크기와 이전 블록의 크기를 합한다.
+        PUT(FTRP(bp), PACK(size, 0)); // 현재 블록의 푸터에 블록의 크기와 가용 여부를 저장한다.
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부를 저장한다.
+        bp = PREV_BLKP(bp); // 현재 블록을 가리키는 포인터를 이전 블록으로 이동시킨다.
     }
+
+    else // 이전 블록도 가용 상태이고 다음 블록도 가용 상태일 때
+    {
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp))); // 이전 블록의 크기와 현재 블록의 크기 다음 블록의 크기까지 다 합한다.
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부 정보를 저장한다.
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // 다음 블록의 푸터에 블록의 크기와 가용 여부 정보를 저장한다.
+        bp = PREV_BLKP(bp); // 현재 블록 위치 포인터를 이전 블록으로 이동시킨다.
+    }
+
     return bp;
 }
 
