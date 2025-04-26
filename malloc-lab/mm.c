@@ -176,7 +176,7 @@ void *mm_malloc(size_t size) // 사용자가 요청한 데이터의 크기
         asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE); // 일반적인 규칙은 오버헤드 바이트를 추가하고, 인접 8의 배수로 반올림 한다.
     }
 
-    if ((bp = find_fit(asize)) != NULL) // 할당기가 요청한 크기를 조정한 후에 적절한 가용 블록을 가용 리스트에서 검색한다. 퍼스트 핏 방식으로
+    if ((bp = find_fit(asize)) != NULL) // 할당기가 요청한 크기를 조정한 후에 적절한 가용 블록을 가용 리스트에서 검색한다.
     {
         place(bp, asize); // 만일 맞는 블록을 찾으면 할당기는 요청한 블록을 배치하고, 옵션으로 초과 부분을 분할하고, 새롭게 할당한 블록을 반환한다.
         return bp; 
@@ -200,6 +200,41 @@ void mm_free(void *bp)
     PUT(HDRP(bp), PACK(size, 0)); // 헤더에 사이즈와 할당 안 함을 표시
     PUT(FTRP(bp), PACK(size, 0)); // 푸터에 사이즈와 할당 안 함을 표시
     coalesce(bp); // 인접 가용 블록들을 병합함.
+}
+
+/* first fit으로 구현 */
+static void *find_fit(size_t asize)
+{
+    void *bp; // 현재 위치 포인터
+
+    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) // 힙 전체를 순회
+    {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) // 가용 상태이고, 블록 크기가 요청된 데이터 크기보다 같거나 크다면
+        {
+            return bp; // 현재 블록의 위치를 반환
+        }
+    }
+    return NULL; // 없으면 NULL을 반환
+}
+
+/* 요청한 블록을 새 가용 블록에 배치하고, 필요한 경우에 블록을 분할한다. */
+static void place(void* bp, size_t asize)
+{
+    size_t csize = GET_SIZE(HDRP(bp)); // 새 가용 블록의 크기
+
+    if ((csize - asize) >= (2*DSIZE)) // 새 가용 블럭의 크기가 요청된 데이터를 할당하고도 남은 공간이 2워드 이상이라면 - 사실상 가용 블럭 분할하겠다는 거임
+    {
+        PUT(HDRP(bp), PACK(asize, 1)); // 헤더에 요청한 데이터의 크기와 할당 비트를 저장
+        PUT(FTRP(bp), PACK(asize, 1)); // 푸터에 요청한 데이터의 크기와 할당 비트를 저장
+        bp = NEXT_BLKP(bp); // 다음 블럭으로 이동
+        PUT(HDRP(bp), PACK(csize - asize, 0)); // 헤더에 요청된 데이터를 저장하고 남은 블럭의 크기와 할당 비트를 저장
+        PUT(FTRP(bp), PACK(csize - asize, 0)); // 푸터에 요청된 데이터를 저장하고 남은 블럭의 크기와 할당 비트를 저장
+    }
+    else // 할당하고 남은 공간이 2워드가 되지 않는다면 분할하지 않는다
+    {
+        PUT(HDRP(bp), PACK(csize, 1)); // 헤더에 블록의 크기와 할당 비트 저장
+        PUT(FTRP(bp), PACK(csize, 1)); // 푸터에 블록의 크기와 할당 비트 저장
+    }
 }
 
 /*
