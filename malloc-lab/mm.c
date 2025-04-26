@@ -89,18 +89,59 @@ int mm_init(void)
     return 0;
 }
 
-/* 힙이 초기화 될 때와 mm_malloc이 적당한 fit을 찾지 못했을 때 호출되는 함수 */
-void *extend_heap(size_t words)
+/* 힙이 초기화 될 때와 mm_malloc이 적당한 fit을 찾지 못했을 때 호출되는 함수. 
+이전 힙이 가용 블록으로 끝났다면 두 개의 가용 블록을 통합하기 위해 coalesce 함수를 호출하고, 
+통합된 블록의 블록 포인터를 리턴한다 */
+static void *extend_heap(size_t words)
 {
     char *bp;
     size_t size;
 
-    // 
+    // 정렬을 유지하기 위해서 요청한 크기를 인접 2워드의 배수(8바이트)로 반올림하며 그 후 메모리 시스템으로부터 추가적인 힙 공간을 요청한다.
     size = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
     if ((long)(bp = mem_sbrk(size)) == -1)
     {
         return NULL;
     }
+
+    /* 새 가용 블록의 헤더 푸터 생성 및 에필로그 헤더 초기화 */
+    PUT(HDRP(bp), PACK(size, 0)); // 새 가용 블록의 헤더
+    PUT(FTRP(bp), PACK(size, 0)); // 새 가용 블록의 푸터
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); // 이 블록의 마지막 워드는 새 에필로그 블록 헤더가 된다.
+
+    /* 이전 힙이 가용 블록으로 끝났다면 두 개의 가용 블록을 통합하기 위해 coalesce 함수를 호출하고, 통합된 블록의 블록 포인터를 리턴한다 */
+    return coalesce(bp);
+}
+
+static void *coalesce(void *bp)
+{
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
+
+    /* case 1 */
+    if(prev_alloc && next_alloc)
+    {
+        return bp;
+    }
+
+    /* case 2 */
+    else if (prev_alloc && !next_alloc)
+    {
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
+    }
+
+    else
+    {
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp)));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
+    }
+    return bp;
 }
 
 /*
@@ -120,11 +161,14 @@ void *mm_malloc(size_t size)
     }
 }
 
-/*
- * mm_free - Freeing a block does nothing.
- */
-void mm_free(void *ptr)
+// 요청한 블록을 반환하고, 경계 태그 연결을 통해서 블록을 통합한다.
+void mm_free(void *bp)
 {
+    size_t size = GET_SIZE(HDRP(bp)); // 블록 사이즈를 저장
+
+    PUT(HDRP(bp), PACK(size, 0)); // 헤더에 사이즈와 할당 안 함을 표시
+    PUT(FTRP(bp), PACK(size, 0)); // 푸터에 사이즈와 할당 안 함을 표시
+    coalesce(bp); // 인접 가용 블록들을 병합함.
 }
 
 /*
