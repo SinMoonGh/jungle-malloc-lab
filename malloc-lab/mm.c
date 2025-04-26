@@ -34,6 +34,27 @@ team_t team = {
     /* Second member's email address (leave blank if none) */
     ""};
 
+
+#define WSIZE 4 // 헤더와 푸터의 사이즈를 4byte로 잡은 것 같은데 맥은 4바이트가 아닐 수도 있다. 만약 64비트 환경이라면 8바이트로 변경해줘야 함.
+#define DSIZE 8 // 더블 워드 사이즈. 블록 하나의 최소 바이트를 말한다.
+#define CHUNKSIZE (1<<12) // 왼쪽으로 12비트 이동. 그러면 2의 12승임. 2의 12승은 = 4096(바이트)이고, 4096바이트는 4KB가 된다. 초기에 malloc을 생성하면 공간이 없기 때문에 먼저 chunksize만큼 요청한다. 또한 가용 블록이 더이상 존재하지 않을 때 호출한다.
+
+#define MAX(x, y) ((x) > (y)? (x):(y)) // x와 y 중 큰 값을 리턴한다.
+
+#define PACK(size, alloc) ((size) | (alloc)) // 크기와 할당 비트를 통합하여 헤더와 풋터에 저장할 수 있는 값을 리턴한다.
+
+#define GET(p) (*(unsigned int *)(p)) // p가 참조하는 워드를 읽어서 반환한다. p는 void형 포인터라서 역참조는 할 수 없다?
+#define PUT(p, val) (*(unsigned int *)(p) = (val)) // p가 가리키는 워드에 val을 저장하는 역할을 하는데 이때 블록의 크기와 가용 비트를 저장한다.
+
+#define GET_SIZE(p) (GET(p) & ~0x7) // p가 가리키는 헤더와 풋터에 사이즈를 저장
+#define GET_ALLOC(p) (GET(p) & 0x1) // p가 가리키는 헤더와 풋터에 할당 비트를 저장한다.
+
+#define HDRP(bp) ((char *)(bp) - WSIZE) // 블록 포인터 bp가 주어졌을 때 헤더를 가리키는 포인터를 리턴한다. 주소가 아니고?
+#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) // 블록 포인터 bp가 주어졌을 때 풋터를 가리키는 포인터를 리턴한다.
+
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록 포인터를 리턴한다.
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록 포인터를 리턴한다.
+
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
 
@@ -42,12 +63,44 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
-/*
- * mm_init - initialize the malloc package.
- */
+
+static char *heap_listp = NULL;  // 전역(정확히는 파일 내 전역) 변수로
+
+/* mm_malloc이나 mm_free를 호출하기 전에 mm_init 함수를 호출해서 힙을 초기화해줘야 한다 */
 int mm_init(void)
 {
+    // 메모리 시스템에서 4워드를 가져와서 빈 가용리스트를 만들 수 있도록 초기화
+    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1){
+        return -1;
+    }
+    
+    PUT(heap_listp, 0); // 패딩 블록이다. 블록 크기가 0이고, 가용/할당 상태도 0
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더 size 1워드에 alloc 1
+    PUT(heap_listp  + (2*WSIZE), PACK(DSIZE, 1)); // 프롤로그 푸터 size 2워드에 alloc 1
+    PUT(heap_listp  + (3*WSIZE), PACK(0, 1)); // 에필로그 헤더 사이즈 0에 alloc 1
+    heap_listp += (2*WSIZE); // heap_listp가 16번지(프롤로그 블록의 payload 위치)로 이동
+
+    /* 힙을 chunksize 바이트로 확장하고, 초기 가용 블록을 생성한다. */
+    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+    {
+        return -1;
+    }
+
     return 0;
+}
+
+/* 힙이 초기화 될 때와 mm_malloc이 적당한 fit을 찾지 못했을 때 호출되는 함수 */
+void *extend_heap(size_t words)
+{
+    char *bp;
+    size_t size;
+
+    // 
+    size = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
+    if ((long)(bp = mem_sbrk(size)) == -1)
+    {
+        return NULL;
+    }
 }
 
 /*
