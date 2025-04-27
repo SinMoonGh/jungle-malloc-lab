@@ -241,21 +241,21 @@ static void place(void* bp, size_t asize)
 }
 
 /*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
+기존의 할당된 메모리 블록의 크기를 변경하고, 그에 맞는 새로운 주소를 반환한다
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    void *oldptr = ptr; // 기존의 블록 포인터
+    void *newptr; // 새로운 블록 포인터
+    size_t copySize; // 블록 크기를 복사해서 저장할 변수
 
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    newptr = mm_malloc(size); // size 크기의 메모리 블록을 할당하고 그 포인터를 반환한다.
+    if (newptr == NULL) // 새로운 메모리 할당 실패
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
+    if (size < copySize) // 기존 블록의 크기가 작을 경우 
+        copySize = size; // 기존 블록의 크기를 복사한다.
+    memcpy(newptr, oldptr, copySize); // 기존 블록의 크기를 복사해서 새로운 블록을 생성할 때 사용한다.
+    mm_free(oldptr); // 기존 블록은 해제
+    return newptr; // 새롭게 생성된 블록의 포인터를 반환한다
 }
