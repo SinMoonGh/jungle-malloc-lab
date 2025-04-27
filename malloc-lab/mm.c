@@ -68,6 +68,7 @@ static void *coalesce(void *bp);
 static void *find_fit(size_t asize);       // first fit으로 적절한 가용 블록 리턴
 static void place(void *bp, size_t asize); // 남은 블록 분할
 static char *heap_listp = NULL;  // 전역(정확히는 파일 내 전역) 변수로
+static char *next_fitp = NULL;
 
 /* mm_malloc이나 mm_free를 호출하기 전에 mm_init 함수를 호출해서 힙을 초기화해줘야 한다 */
 int mm_init(void)
@@ -153,6 +154,7 @@ static void *coalesce(void *bp)
         bp = PREV_BLKP(bp); // 현재 블록 위치 포인터를 이전 블록으로 이동시킨다.
     }
 
+    next_fitp = bp; // 여기서 많이 헷깔렸는데 병합한 뒤에 해당 블록에 next fit 포인터를 이동시키는 이유는 인접한 블록을 next fit이 가리키고 있을 경우 가리키고 있는 블록이 병합이 되버리면 next fit 포인터는 잘못된 주소를 가리킬 수 있다.
     return bp;
 }
 
@@ -205,19 +207,33 @@ void mm_free(void *bp)
     coalesce(bp); // 인접 가용 블록들을 병합함.
 }
 
-/* first fit으로 구현 */
+/* next fit으로 구현 */
 static void *find_fit(size_t asize)
 {
-    void *bp; // 현재 위치 포인터
-
-    for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) // 힙 전체를 순회
+    void *bp; // 현재 블록 주소
+    
+    if(next_fitp == NULL) // 할당되거나 병합된 블록이 없다면
     {
-        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) // 가용 상태이고, 블록 크기가 요청된 데이터 크기보다 같거나 크다면
+        next_fitp = heap_listp; // 처음부터 탐색
+    }
+
+    for (bp = next_fitp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) // GET_SIZE(HDRP(bp))가 0인 경우는 에필로그 블록 밖에 없음. 따라서 이전 블록부터 힙 전체를 순회하겠다는 코드
+    {
+        if(!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) // 가용 블록이면서 요청된 크기보다 블록의 크기가 더 클 경우
         {
-            return bp; // 현재 블록의 위치를 반환
+            return bp; // 블록의 위치 반환
         }
     }
-    return NULL; // 없으면 NULL을 반환
+
+    for (bp = heap_listp; bp < next_fitp; bp = NEXT_BLKP(bp)) // 만약 가용 블럭을 찾지 못한다면 힙 시작부터 next fit 전까지 순회한다
+    {
+        if(!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) // 가용 블록이면서 요청된 크기보다 블록의 크기가 더 클 경우 
+        {
+            return bp; // 블록의 위치 반환
+        }
+    }
+
+    return NULL; // 아니면 해당 블록이 없음을 반환
 }
 
 /* 요청한 블록을 새 가용 블록에 배치하고, 필요한 경우에 블록을 분할한다. */
@@ -238,24 +254,33 @@ static void place(void* bp, size_t asize)
         PUT(HDRP(bp), PACK(csize, 1)); // 헤더에 새 가용 블록의 크기와 할당 비트 저장
         PUT(FTRP(bp), PACK(csize, 1)); // 푸터에 새 가용 블록의 크기와 할당 비트 저장
     }
+
+    next_fitp = bp; // next fit은 처음부터 가용 공간을 찾는 것이 아니라 할당된 블록의 위치부터 가용 공간을 탐색한다.
 }
 
 /*
 기존의 할당된 메모리 블록의 크기를 변경하고, 그에 맞는 새로운 주소를 반환한다
  */
-void *mm_realloc(void *ptr, size_t size)
+void *mm_realloc(void *bp, size_t size)
 {
-    void *oldptr = ptr; // 기존의 블록 포인터
-    void *newptr; // 새로운 블록 포인터
+    void *oldbp = bp; // 기존의 블록 포인터
+    void *newbp; // 새로운 블록 포인터
     size_t copySize; // 블록 크기를 복사해서 저장할 변수
 
-    newptr = mm_malloc(size); // size 크기의 메모리 블록을 할당하고 그 포인터를 반환한다.
-    if (newptr == NULL) // 새로운 메모리 할당 실패
+    if (size <= 0) // 요청한 데이터의 크기가 0보다 작다면
+    {
+        mm_free(bp); // 기존의 블록을 해제시킨다.
+        return 0;
+    }
+
+    newbp = mm_malloc(size); // size 크기의 메모리 블록을 할당하고 그 포인터를 반환한다.
+    if (newbp == NULL) // 새로운 메모리 할당 실패
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
+
+    copySize = *(size_t *)((char *)oldbp - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
     if (size < copySize) // 기존 블록의 크기가 작을 경우 
         copySize = size; // 기존 블록의 크기를 복사한다.
-    memcpy(newptr, oldptr, copySize); // 기존 블록의 크기를 복사해서 새로운 블록을 생성할 때 사용한다.
-    mm_free(oldptr); // 기존 블록은 해제
-    return newptr; // 새롭게 생성된 블록의 포인터를 반환한다
+    memcpy(newbp, oldbp, copySize); // 기존 블록의 크기를 복사해서 새로운 블록을 생성할 때 사용한다.
+    mm_free(oldbp); // 기존 블록은 해제
+    return newbp; // 새롭게 생성된 블록의 포인터를 반환한다
 }
