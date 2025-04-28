@@ -45,6 +45,7 @@ team_t team = {
 
 #define GET(p) (*(unsigned int *)(p)) // p가 참조하는 워드를 읽어서 반환한다. p는 void형 포인터라서 역참조는 할 수 없다?
 #define PUT(p, val) (*(unsigned int *)(p) = (val)) // p가 가리키는 워드에 val을 저장하는 역할을 하는데 이때 블록의 크기와 가용 비트를 저장한다.
+#define PUT_PTR(p, val) (*(void **)(p) = (val))
 
 #define GET_SIZE(p) (GET(p) & ~0x7) // p가 가리키는 헤더와 풋터에 사이즈를 저장
 #define GET_ALLOC(p) (GET(p) & 0x1) // p가 가리키는 헤더와 풋터에 할당 비트를 저장한다.
@@ -82,7 +83,8 @@ static char *explicit_listp = NULL; // free list의 시작 주소를 저장할 �
 int mm_init(void)
 {
     // 메모리 시스템에서 6워드를 가져와서 빈 가용리스트를 만들 수 있도록 초기화 
-    if ((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1){
+    if ((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1)
+    {
         return -1;
     }
     
@@ -91,8 +93,8 @@ int mm_init(void)
     free 리스트는 이전과는 다르게 pred와 succ 포인터를 추가해야하기 때문에 
     각각 1워드씩 추가해줘야 한다. */
     PUT(heap_listp + WSIZE, PACK(4 * WSIZE, 1)); 
-    PUT(heap_listp + (2 * WSIZE), NULL); // pred 포인터 
-    PUT(heap_listp + (3 * WSIZE), NULL); // succ 포인터
+    PUT(heap_listp + (2*WSIZE), NULL); // pred 포인터 
+    PUT(heap_listp + (3*WSIZE), NULL); // succ 포인터
     PUT(heap_listp  + (4*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더와 마찬가지로 블록크기 : 4워드, 할당비트 : 1
     PUT(heap_listp  + (5*WSIZE), PACK(0, 1)); // 에필로그 헤더 사이즈 0에 alloc 1
     
@@ -103,7 +105,7 @@ int mm_init(void)
     {
         return -1;
     }
-
+    
     return 0;
 }
 
@@ -165,13 +167,14 @@ static void *coalesce(void *bp)
 
     else // 이전 블록도 가용 상태이고 다음 블록도 가용 상태일 때
     {
-        remove_block(NEXT_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 next 블럭을 free 리스트에서 제거함.
         remove_block(PREV_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 prev 블럭을 free 리스트에서 제거함.
+        remove_block(NEXT_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 next 블럭을 free 리스트에서 제거함.
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp))); // 이전 블록의 크기와 현재 블록의 크기 다음 블록의 크기까지 다 합한다.
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부 정보를 저장한다.
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // 다음 블록의 푸터에 블록의 크기와 가용 여부 정보를 저장한다.
         bp = PREV_BLKP(bp); // 현재 블록 위치 포인터를 이전 블록으로 이동시킨다.
     }
+
     insert_in_head(bp); // 병합된 새로운 블럭을 다시 free 리스트에 삽입
         
     return bp;
@@ -231,7 +234,7 @@ static void *find_fit(size_t asize)
 {
     void *bp; // 현재 위치 포인터
 
-    for (bp = explicit_listp; GET_ALLOC(HDRP(bp)) != 1; bp = GET_PRED(bp)) // free 리스트 전체 순회
+    for (bp = explicit_listp; GET_ALLOC(HDRP(bp)) != 1; bp = GET_SUCC(bp)) // free 리스트 전체 순회
     {
         if (asize <= GET_SIZE(HDRP(bp))) // 블록 크기가 요청된 데이터 크기보다 같거나 크다면
         {
@@ -283,7 +286,9 @@ void *mm_realloc(void *bp, size_t size)
     if (newbp == NULL) // 새로운 메모리 할당 실패
         return NULL;
 
-    copySize = *(size_t *)((char *)oldbp - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
+    // copySize = *(size_t *)((char *)oldbp - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
+    copySize = GET(HDRP(oldbp)) - DSIZE;
+
     if (size < copySize) // 기존 블록의 크기가 작을 경우 
         copySize = size; // 기존 블록의 크기를 복사한다.
     memcpy(newbp, oldbp, copySize); // 기존 블록의 크기를 복사해서 새로운 블록을 생성할 때 사용한다.
@@ -292,16 +297,19 @@ void *mm_realloc(void *bp, size_t size)
 }
 
 /* 가용 블럭을 free 리스트 맨 앞에 삽입 */
-void insert_in_head(void *bp)
+static void insert_in_head(void *bp)
 {
     GET_SUCC(bp) = explicit_listp; // 새로 삽입된 블럭의 succ 포인터가 head(explicit_listp)를 가리키게 함 
     GET_PRED(bp) = NULL; // 현재 블럭의 pred는 맨 앞이기 때문에 가리킬 블럭이 없다
-    GET_PRED(explicit_listp) = bp; // root의 pred 포인터를 현재 블럭을 가리키게 함
+    if (explicit_listp != NULL)
+    {
+        GET_PRED(explicit_listp) = bp; // root의 pred 포인터를 현재 블럭을 가리키게 함
+    }
     explicit_listp = bp; // head(explicit_listp) 포인터가 현재 블럭을 가리키게 이동시킨다.
 }
 
 /* 할당 상태로 바뀐 블럭은 free 리스트에서 삭제 */
-void remove_block(void *bp)
+static void remove_block(void *bp)
 {
     if(bp == explicit_listp) // 만약 요청된 데이터의 크기에 맞는 free 블럭이 free 리스트의 맨 앞에 있다면
     {
@@ -310,7 +318,7 @@ void remove_block(void *bp)
     }
     else
     {
-        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만듦
-        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp); // 내 다음 블럭의 pred 포인터를 내 이전 블럭을 가리키
+        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만든다 <- 세그 폴트
+        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp); // 내 다음 블럭의 pred 포인터를 내 이전 블럭을 가리키게 만든다
     }
 }
