@@ -38,6 +38,7 @@ team_t team = {
 #define WSIZE 4 // 헤더와 푸터의 사이즈를 4byte로 잡은 것 같은데 맥은 4바이트가 아닐 수도 있다. 만약 64비트 환경이라면 8바이트로 변경해줘야 함.
 #define DSIZE 8 // 더블 워드 사이즈. 블록 하나의 최소 바이트를 말한다.
 #define CHUNKSIZE (1<<12) // 왼쪽으로 12비트 이동. 그러면 2의 12승임. 2의 12승은 = 4096(바이트)이고, 4096바이트는 4KB가 된다. 초기에 malloc을 생성하면 공간이 없기 때문에 먼저 chunksize만큼 요청한다. 또한 가용 블록이 더이상 존재하지 않을 때 호출한다.
+#define MINIMUM 16 // header, footer, pred, succ 각각 1워드라서 최소 단위를 나타냄
 
 #define MAX(x, y) ((x) > (y)? (x):(y)) // x와 y 중 큰 값을 리턴한다.
 
@@ -56,12 +57,16 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록 포인터를 리턴한다.
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록 포인터를 리턴한다.
 
-/* single word (4) or double word (8) alignment */
+/* 아래 ALIGH(size) 함수에서 할당할 크기인 size를 8의 배수로 맞춰서 할당하기 위한 매크로 */
 #define ALIGNMENT 8
 
-/* rounds up to the nearest multiple of ALIGNMENT */
+/* 할당할 크기인 size를 보고 8의 배수 크기로 할당하기 위해 size를 다시 align하는 작업을 한다. 만약 size가 4이면 (4+8-1) = 11 = 0000 1011 이고
+이를 ~0x7 = 1111 1000과 AND 연한하면 0000 1000 = 8이 되어 적당한 8의 배수 크기로 align할 수 있다.*/
 #define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
+/* 메모리 할당 시 기본적으로 header와 footer를 위해 필요한 더블워드만큼의 메모리 크기.
+    long형인 size_t의 크기만큼 8을 나타내는 매크로.
+ */
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 /* explicit free List */
@@ -77,7 +82,7 @@ static void insert_in_head(void *ptr); // free 리스트의 head부분에 삽입
 static void remove_block(void *ptr); // free 리스트의 해당 블럭을 삭제
 
 static char *heap_listp = NULL;  // 전역(정확히는 파일 내 전역) 변수로
-static char *explicit_listp = NULL; // free list의 시작 주소를 저장할 변수
+static char *free_listp = NULL; // free list의 시작 주소를 저장할 변수
 
 /* mm_malloc이나 mm_free를 호출하기 전에 mm_init 함수를 호출해서 힙을 초기화해줘야 한다 */
 int mm_init(void)
@@ -88,17 +93,14 @@ int mm_init(void)
         return -1;
     }
     
-    PUT(heap_listp, 0); // 패딩 블록이다. 블록 크기가 0이고, 가용/할당 상태도 0
-    /* 일단 프롤로그 헤더에 블록 크기가 4워드라는 정보를 저장했다. 
-    free 리스트는 이전과는 다르게 pred와 succ 포인터를 추가해야하기 때문에 
-    각각 1워드씩 추가해줘야 한다. */
-    PUT(heap_listp + WSIZE, PACK(4 * WSIZE, 1)); 
-    PUT(heap_listp + (2*WSIZE), NULL); // pred 포인터 
-    PUT(heap_listp + (3*WSIZE), NULL); // succ 포인터
-    PUT(heap_listp  + (4*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더와 마찬가지로 블록크기 : 4워드, 할당비트 : 1
-    PUT(heap_listp  + (5*WSIZE), PACK(0, 1)); // 에필로그 헤더 사이즈 0에 alloc 1
+    PUT(heap_listp, 0); // 패딩
+    PUT(heap_listp + (1*WSIZE), PACK(MINIMUM, 1)); // 프롤로그 헤더
+    PUT(heap_listp + (2*WSIZE), NULL); // pred
+    PUT(heap_listp + (3*WSIZE), NULL); // succ
+    PUT(heap_listp + (4*WSIZE), PACK(MINIMUM, 1)); // 프롤로그 푸터
+    PUT(heap_listp + (5*WSIZE), PACK(0, 1)); // 에필로그 헤더
     
-    explicit_listp = heap_listp + DSIZE; // pred를 가리키게 함으로써 아직 가용할 블럭이 없음을 나타낸다고 함
+    free_listp = heap_listp + 2*WSIZE; // free list head를 pred로 이동
 
     /* 힙을 chunksize 바이트로 확장하고, 초기 가용 블록을 생성한다. */
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
@@ -114,6 +116,7 @@ int mm_init(void)
 통합된 블록의 블록 포인터를 리턴한다 */
 static void *extend_heap(size_t words)
 {
+    // mm_check();
     char *bp;
     size_t size;
 
@@ -133,21 +136,18 @@ static void *extend_heap(size_t words)
     return coalesce(bp);
 }
 
+/* 병합 함수 */
 static void *coalesce(void *bp)
 {
+    // mm_check();
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // 이전 블록의 푸터에 저장된 size, alloc의 정보를 추출한 후 alloc의 정보만 저장한다.
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp))); // 다음 블록의 헤더에 저장된 size, alloc의 정보를 추출한 후 alloc의 정보만 저장한다.
     size_t size = GET_SIZE(HDRP(bp)); // 현재 블록의 헤더에서 size의 정보를 추출해서 저장한다.
 
-    /* case 1 */
-    if(prev_alloc && next_alloc) // 이전 블록과 다음 블록이 모두 할당되어 있다면 병합하지 않고,
-    {
-        insert_in_head(bp); // free 리스트의 앞쪽에 삽입
-        return bp;
-    }
+    /* case 1. 이전 블록과 다음 블록이 모두 할당되어 있다면 병합하지 않고,free 리스트의 앞쪽에 삽입해 준다. */
 
     /* case 2 */
-    else if (prev_alloc && !next_alloc) // 이전 블록은 할당되어 있지만 다음 블록은 가용 상태일 때
+    if (prev_alloc && !next_alloc) // 이전 블록은 할당되어 있지만 다음 블록은 가용 상태일 때
     {
         remove_block(NEXT_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 next 블럭을 free 리스트에서 제거함.
         size += GET_SIZE(HDRP(NEXT_BLKP(bp))); // 현재 블록의 크기와 다음 블록의 크기를 더한다.
@@ -160,19 +160,18 @@ static void *coalesce(void *bp)
     {
         remove_block(PREV_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 prev 블럭을 free 리스트에서 제거함.
         size += GET_SIZE(HDRP(PREV_BLKP(bp))); // 현재 블록의 크기와 이전 블록의 크기를 합한다.
+        PUT(HDRP(bp), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부를 저장한다.
         PUT(FTRP(bp), PACK(size, 0)); // 현재 블록의 푸터에 블록의 크기와 가용 여부를 저장한다.
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부를 저장한다.
-        bp = PREV_BLKP(bp); // 현재 블록을 가리키는 포인터를 이전 블록으로 이동시킨다.
     }
 
-    else // 이전 블록도 가용 상태이고 다음 블록도 가용 상태일 때
+    else if (!prev_alloc && !next_alloc) // 이전 블록도 가용 상태이고 다음 블록도 가용 상태일 때
     {
         remove_block(PREV_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 prev 블럭을 free 리스트에서 제거함.
         remove_block(NEXT_BLKP(bp)); // 현재 블럭이랑 병합하기 위해 next 블럭을 free 리스트에서 제거함.
         size += GET_SIZE(HDRP(PREV_BLKP(bp))) + GET_SIZE(FTRP(NEXT_BLKP(bp))); // 이전 블록의 크기와 현재 블록의 크기 다음 블록의 크기까지 다 합한다.
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부 정보를 저장한다.
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // 다음 블록의 푸터에 블록의 크기와 가용 여부 정보를 저장한다.
         bp = PREV_BLKP(bp); // 현재 블록 위치 포인터를 이전 블록으로 이동시킨다.
+        PUT(HDRP(bp), PACK(size, 0)); // 이전 블록의 헤더에 블록의 크기와 가용 여부 정보를 저장한다.
+        PUT(FTRP(bp), PACK(size, 0)); // 다음 블록의 푸터에 블록의 크기와 가용 여부 정보를 저장한다.
     }
 
     insert_in_head(bp); // 병합된 새로운 블럭을 다시 free 리스트에 삽입
@@ -185,6 +184,7 @@ static void *coalesce(void *bp)
 더블 워드 요건을 만족시킨다. */
 void *mm_malloc(size_t size) // 사용자가 요청한 데이터의 크기
 {
+    // mm_check();
     size_t asize; // 헤더와 푸터를 더한 최소 크기의 블록
     size_t extendsize; // 확장된 블록 크기
     char *bp; // 현재 블록 위치
@@ -222,6 +222,7 @@ void *mm_malloc(size_t size) // 사용자가 요청한 데이터의 크기
 // 요청한 블록을 반환하고, 경계 태그 연결을 통해서 블록을 통합한다.
 void mm_free(void *bp)
 {
+    // mm_check();
     size_t size = GET_SIZE(HDRP(bp)); // 블록 사이즈를 저장
 
     PUT(HDRP(bp), PACK(size, 0)); // 헤더에 사이즈와 할당 안 함을 표시
@@ -232,9 +233,10 @@ void mm_free(void *bp)
 /* first fit으로 구현 */
 static void *find_fit(size_t asize)
 {
+    // mm_check();
     void *bp; // 현재 위치 포인터
 
-    for (bp = explicit_listp; GET_ALLOC(HDRP(bp)) != 1; bp = GET_SUCC(bp)) // free 리스트 전체 순회
+    for (bp = free_listp; GET_ALLOC(HDRP(bp)) != 1; bp = GET_SUCC(bp)) // free 리스트 전체 순회
     {
         if (asize <= GET_SIZE(HDRP(bp))) // 블록 크기가 요청된 데이터 크기보다 같거나 크다면
         {
@@ -247,6 +249,7 @@ static void *find_fit(size_t asize)
 /* 요청한 블록을 새 가용 블록에 배치하고, 필요한 경우에 블록을 분할한다. */
 static void place(void* bp, size_t asize)
 {
+    // mm_check();
     size_t csize = GET_SIZE(HDRP(bp)); // 새 가용 블록의 크기
 
     remove_block(bp); // 할당된 블럭은 free 리스트에서 제거
@@ -255,7 +258,7 @@ static void place(void* bp, size_t asize)
     {
         PUT(HDRP(bp), PACK(asize, 1)); // 헤더에 요청한 데이터의 크기와 할당 비트를 저장
         PUT(FTRP(bp), PACK(asize, 1)); // 푸터에 요청한 데이터의 크기와 할당 비트를 저장
-        bp = NEXT_BLKP(bp); // 다음 블럭으로 이동
+        bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize - asize, 0)); // 헤더에 요청된 데이터를 저장하고 남은 블럭의 크기와 할당 비트를 저장
         PUT(FTRP(bp), PACK(csize - asize, 0)); // 푸터에 요청된 데이터를 저장하고 남은 블럭의 크기와 할당 비트를 저장
         insert_in_head(bp); // 저장하고 남은 블럭을 free 리스트에 삽입
@@ -272,6 +275,7 @@ static void place(void* bp, size_t asize)
  */
 void *mm_realloc(void *bp, size_t size)
 {
+    // mm_check();
     void *oldbp = bp; // 기존의 블록 포인터
     void *newbp; // 새로운 블록 포인터
     size_t copySize; // 블록 크기를 복사해서 저장할 변수
@@ -287,7 +291,7 @@ void *mm_realloc(void *bp, size_t size)
         return NULL;
 
     // copySize = *(size_t *)((char *)oldbp - SIZE_T_SIZE); // 기존 블록의 크기를 복사한다
-    copySize = GET(HDRP(oldbp)) - DSIZE;
+    copySize = GET(HDRP(oldbp)); // - DSIZE;
 
     if (size < copySize) // 기존 블록의 크기가 작을 경우 
         copySize = size; // 기존 블록의 크기를 복사한다.
@@ -299,26 +303,27 @@ void *mm_realloc(void *bp, size_t size)
 /* 가용 블럭을 free 리스트 맨 앞에 삽입 */
 static void insert_in_head(void *bp)
 {
-    GET_SUCC(bp) = explicit_listp; // 새로 삽입된 블럭의 succ 포인터가 head(explicit_listp)를 가리키게 함 
-    GET_PRED(bp) = NULL; // 현재 블럭의 pred는 맨 앞이기 때문에 가리킬 블럭이 없다
-    if (explicit_listp != NULL)
+    // mm_check();
+    GET_SUCC(bp) = free_listp; // 새로 삽입된 블럭의 succ 포인터가 head(free_listp = heap_listp + 2*WSIZE;)를 가리키게 함 
+    if (free_listp != NULL)
     {
-        GET_PRED(explicit_listp) = bp; // root의 pred 포인터를 현재 블럭을 가리키게 함
+        GET_PRED(free_listp) = bp; // root의 pred 포인터를 현재 블럭을 가리키게 함
     }
-    explicit_listp = bp; // head(explicit_listp) 포인터가 현재 블럭을 가리키게 이동시킨다.
+    free_listp = bp; // head(free_listp = heap_listp + 2*WSIZE;) 포인터가 현재 블럭을 가리키게 이동시킨다.
 }
 
 /* 할당 상태로 바뀐 블럭은 free 리스트에서 삭제 */
 static void remove_block(void *bp)
 {
-    if(bp == explicit_listp) // 만약 요청된 데이터의 크기에 맞는 free 블럭이 free 리스트의 맨 앞에 있다면
-    {
-        GET_PRED(GET_SUCC(bp)) = NULL; // head의 다음 블럭의 pred가 NULL을 가리키게 만든다
-        explicit_listp = GET_SUCC(bp); // head 포인터를 다음 블럭으로 이동
+    if(bp == free_listp) // 만약 요청된 데이터의 크기에 맞는 free 블럭이 free 리스트의 맨 앞에 있다면
+    {   
+        GET_PRED(GET_SUCC(bp)) = NULL;
+        free_listp = GET_SUCC(bp); // head 포인터를 다음 블럭으로 이동
     }
     else
-    {
-        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만든다 <- 세그 폴트
-        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp); // 내 다음 블럭의 pred 포인터를 내 이전 블럭을 가리키게 만든다
+    {        
+        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만든다
+        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp); // 내 다음 블럭의 pred 포인터를 내 이전 블럭을 가리키게 만든다        
     }
 }
+
