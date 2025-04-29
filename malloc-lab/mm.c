@@ -15,6 +15,10 @@
 #include <unistd.h>
 #include <string.h>
 
+/* 힙 검사기 */
+#include <stdint.h>
+#include <stdbool.h>
+
 #include "mm.h"
 #include "memlib.h"
 
@@ -35,10 +39,22 @@ team_t team = {
     ""};
 
 
-#define WSIZE 4 // 헤더와 푸터의 사이즈를 4byte로 잡은 것 같은데 맥은 4바이트가 아닐 수도 있다. 만약 64비트 환경이라면 8바이트로 변경해줘야 함.
-#define DSIZE 8 // 더블 워드 사이즈. 블록 하나의 최소 바이트를 말한다.
+/* 아래 ALIGH(size) 함수에서 할당할 크기인 size를 8의 배수로 맞춰서 할당하기 위한 매크로 */
+#define ALIGNMENT 16
+
+/* 할당할 크기인 size를 보고 8의 배수 크기로 할당하기 위해 size를 다시 align하는 작업을 한다. 만약 size가 4이면 (4+8-1) = 11 = 0000 1011 이고
+이를 ~0x7 = 1111 1000과 AND 연한하면 0000 1000 = 8이 되어 적당한 8의 배수 크기로 align할 수 있다.*/
+#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0xF)
+
+/* 메모리 할당 시 기본적으로 header와 footer를 위해 필요한 더블워드만큼의 메모리 크기.
+    long형인 size_t의 크기만큼 8을 나타내는 매크로.
+ */
+#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+
+#define WSIZE 8 // 헤더와 푸터의 사이즈를 4byte로 잡은 것 같은데 맥은 4바이트가 아닐 수도 있다. 만약 64비트 환경이라면 8바이트로 변경해줘야 함.
+#define DSIZE 16 // 더블 워드 사이즈. 블록 하나의 최소 바이트를 말한다.
 #define CHUNKSIZE (1<<12) // 왼쪽으로 12비트 이동. 그러면 2의 12승임. 2의 12승은 = 4096(바이트)이고, 4096바이트는 4KB가 된다. 초기에 malloc을 생성하면 공간이 없기 때문에 먼저 chunksize만큼 요청한다. 또한 가용 블록이 더이상 존재하지 않을 때 호출한다.
-#define MINIMUM 16 // header, footer, pred, succ 각각 1워드라서 최소 단위를 나타냄
+#define MINIMUM 32 // header, footer, pred, succ 각각 1워드라서 최소 단위를 나타냄
 
 #define MAX(x, y) ((x) > (y)? (x):(y)) // x와 y 중 큰 값을 리턴한다.
 
@@ -56,18 +72,6 @@ team_t team = {
 
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록 포인터를 리턴한다.
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록 포인터를 리턴한다.
-
-/* 아래 ALIGH(size) 함수에서 할당할 크기인 size를 8의 배수로 맞춰서 할당하기 위한 매크로 */
-#define ALIGNMENT 8
-
-/* 할당할 크기인 size를 보고 8의 배수 크기로 할당하기 위해 size를 다시 align하는 작업을 한다. 만약 size가 4이면 (4+8-1) = 11 = 0000 1011 이고
-이를 ~0x7 = 1111 1000과 AND 연한하면 0000 1000 = 8이 되어 적당한 8의 배수 크기로 align할 수 있다.*/
-#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
-
-/* 메모리 할당 시 기본적으로 header와 footer를 위해 필요한 더블워드만큼의 메모리 크기.
-    long형인 size_t의 크기만큼 8을 나타내는 매크로.
- */
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 /* explicit free List */
 #define GET_PRED(bp) (*(void **)(bp)) // pred 포인터를 읽어옴
