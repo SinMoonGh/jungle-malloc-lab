@@ -14,6 +14,8 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #include "mm.h"
 #include "memlib.h"
@@ -38,6 +40,7 @@ team_t team = {
 #define WSIZE 4 // 헤더와 푸터의 사이즈를 4byte로 잡은 것 같은데 맥은 4바이트가 아닐 수도 있다. 만약 64비트 환경이라면 8바이트로 변경해줘야 함.
 #define DSIZE 8 // 더블 워드 사이즈. 블록 하나의 최소 바이트를 말한다.
 #define CHUNKSIZE (1<<12) // 왼쪽으로 12비트 이동. 그러면 2의 12승임. 2의 12승은 = 4096(바이트)이고, 4096바이트는 4KB가 된다. 초기에 malloc을 생성하면 공간이 없기 때문에 먼저 chunksize만큼 요청한다. 또한 가용 블록이 더이상 존재하지 않을 때 호출한다.
+#define MINIMUM 16
 
 #define MAX(x, y) ((x) > (y)? (x):(y)) // x와 y 중 큰 값을 리턴한다.
 
@@ -78,6 +81,14 @@ static void remove_block(void *ptr); // free 리스트의 해당 블럭을 삭�
 
 static char *heap_listp = NULL;  // 전역(정확히는 파일 내 전역) 변수로
 static char *explicit_listp = NULL; // free list의 시작 주소를 저장할 변수
+
+// 프로토타입 (mm.h에도 추가해야 합니다)
+int mm_check(void);
+
+/* test */
+void test_remove_block_middle();
+void test_remove_block_head();
+void test_remove_block_only_node();
 
 /* mm_malloc이나 mm_free를 호출하기 전에 mm_init 함수를 호출해서 힙을 초기화해줘야 한다 */
 int mm_init(void)
@@ -300,6 +311,7 @@ void *mm_realloc(void *bp, size_t size)
 static void insert_in_head(void *bp)
 {
     GET_SUCC(bp) = explicit_listp; // 새로 삽입된 블럭의 succ 포인터가 head(explicit_listp)를 가리키게 함 
+    assert(GET_SUCC(bp) == NULL);
     GET_PRED(bp) = NULL; // 현재 블럭의 pred는 맨 앞이기 때문에 가리킬 블럭이 없다
     if (explicit_listp != NULL)
     {
@@ -311,6 +323,11 @@ static void insert_in_head(void *bp)
 /* 할당 상태로 바뀐 블럭은 free 리스트에서 삭제 */
 static void remove_block(void *bp)
 {
+    // mm_check();
+    assert(bp != explicit_listp);
+    printf("bp: %p\n", bp);
+    printf("explicit_listp: %p\n", explicit_listp);
+    
     if(bp == explicit_listp) // 만약 요청된 데이터의 크기에 맞는 free 블럭이 free 리스트의 맨 앞에 있다면
     {
         GET_PRED(GET_SUCC(bp)) = NULL; // head의 다음 블럭의 pred가 NULL을 가리키게 만든다
@@ -318,7 +335,153 @@ static void remove_block(void *bp)
     }
     else
     {
-        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만든다 <- 세그 폴트
+        printf("GET_PRED(bp): %p\n", GET(GET_PRED(bp)));
+        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp); // 내 앞 블럭의 succ 포인터를 내 다음 블럭을 가리키게 만든다
         GET_PRED(GET_SUCC(bp)) = GET_PRED(bp); // 내 다음 블럭의 pred 포인터를 내 이전 블럭을 가리키게 만든다
     }
+}
+
+/* ------------------------------------------- heap check ------------------------------------------ */
+int mm_check(void) {
+    void *heap_lo = mem_heap_lo();
+    void *heap_hi = mem_heap_hi();
+    bool ok = true;
+    char *bp, *free_bp;
+
+    // 1) 프로로그 블록 검사
+    //    페이로드 시작(bp = heap_listp + DSIZE)의 헤더가 기대 크기인지, 할당 비트가 1인지 확인
+    if (GET_SIZE(HDRP(heap_listp + DSIZE)) != MINIMUM
+        || !GET_ALLOC(HDRP(heap_listp + DSIZE))) {
+        fprintf(stderr, "Bad prologue block\n");
+        ok = false;
+    }
+
+    // 2) 힙 전체 순회
+    for (bp = heap_listp + DSIZE; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        size_t hsize = GET_SIZE(HDRP(bp));
+        size_t fsize = GET_SIZE(FTRP(bp));
+        int  halt  = GET_ALLOC(HDRP(bp));
+        int  falt  = GET_ALLOC(FTRP(bp));
+
+        // 헤더/푸터 크기 일치
+        if (hsize != fsize) {
+            fprintf(stderr, "Size mismatch at %p: hdr=%zu, ftr=%zu\n",
+                    bp, hsize, fsize);
+            ok = false;
+        }
+        // 헤더/푸터 할당 비트 일치
+        if (halt != falt) {
+            fprintf(stderr, "Alloc bit mismatch at %p: hdr=%d, ftr=%d\n",
+                    bp, halt, falt);
+            ok = false;
+        }
+        // 정렬 검사
+        if ((uintptr_t)bp % ALIGNMENT) {
+            fprintf(stderr, "Misaligned payload at %p\n", bp);
+            ok = false;
+        }
+        // 연속된 가용 블록 검사
+        if (!halt && !GET_ALLOC(HDRP(NEXT_BLKP(bp)))) {
+            fprintf(stderr, "Contiguous free blocks at %p and %p\n",
+                    bp, NEXT_BLKP(bp));
+            ok = false;
+        }
+    }
+
+    // 3) free list 순회 — 가용·포인터 일관성 검사
+    for (free_bp = explicit_listp; free_bp != NULL;
+         free_bp = (char*)GET_SUCC(free_bp)) {
+
+        // 힙 범위 내 검사
+        if (free_bp < (char*)heap_lo || free_bp > (char*)heap_hi) {
+            fprintf(stderr, "Free pointer OOB: %p\n", free_bp);
+            ok = false;
+        }
+        // 가용 상태인지
+        if (GET_ALLOC(HDRP(free_bp))) {
+            fprintf(stderr, "Allocated block in free list at %p\n", free_bp);
+            ok = false;
+        }
+        // succ ↔ pred 일관성
+        void *succ = GET_SUCC(free_bp);
+        if (succ && GET_PRED((char*)succ) != free_bp) {
+            fprintf(stderr,
+                    "Inconsistent succ/pred at %p ↔ %p\n",
+                    free_bp, succ);
+            ok = false;
+        }
+        void *pred = GET_PRED(free_bp);
+        if (pred && GET_SUCC((char*)pred) != free_bp) {
+            fprintf(stderr,
+                    "Inconsistent pred/succ at %p ↔ %p\n",
+                    free_bp, pred);
+            ok = false;
+        }
+    }
+
+    // 4) 힙 순회로 발견한 모든 가용 블록이 free list에도 있는지 검사
+    for (bp = heap_listp + DSIZE; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+        if (!GET_ALLOC(HDRP(bp))) {
+            bool found = false;
+            for (free_bp = explicit_listp; free_bp != NULL;
+                 free_bp = (char*)GET_SUCC(free_bp)) {
+                if (free_bp == bp) { found = true; break; }
+            }
+            if (!found) {
+                fprintf(stderr, "Free block not in free list: %p\n", bp);
+                ok = false;
+            }
+        }
+    }
+
+    return ok;
+}
+
+/* ------------------------------------------------- remove_block_test -------------------------------------------------- */
+void test_remove_block_middle() {
+    // 가용 블럭 3개 할당한다고 가정
+    void *a = mm_malloc(32);
+    void *b = mm_malloc(32);
+    void *c = mm_malloc(32);
+
+    mm_free(a);
+    mm_free(b);
+    mm_free(c);
+
+    // coalescing을 방지하려면 앞뒤 할당 블럭으로 감싸두는 것도 방법
+    // or 연속되지 않은 size로 분할해서 구현해도 좋음
+
+    // free list 구조: c → b → a (최신 것이 head에 들어간다고 가정)
+    assert(explicit_listp == c);
+    assert(GET_SUCC(c) == b);
+    assert(GET_SUCC(b) == a);
+
+    // 중간 노드 제거
+    remove_block(b);
+
+    // 포인터 연결이 c → a로 유지되어야 함
+    assert(GET_SUCC(c) == a);
+    assert(GET_PRED(a) == c);
+    printf("✔️ test_remove_block_middle passed\n");
+}
+
+void test_remove_block_head() {
+    void *a = mm_malloc(32);
+    mm_free(a);
+
+    assert(explicit_listp == a);
+    remove_block(a);
+    assert(explicit_listp == GET_SUCC(a));
+    printf("✔️ test_remove_block_head passed\n");
+}
+
+void test_remove_block_only_node() {
+    void *a = mm_malloc(32);
+    mm_free(a);
+
+    assert(explicit_listp == a);
+    assert(GET_SUCC(a) == NULL);
+    remove_block(a);
+    assert(explicit_listp == NULL);
+    printf("✔️ test_remove_block_only_node passed\n");
 }
