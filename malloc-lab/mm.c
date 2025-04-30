@@ -43,8 +43,8 @@ team_t team = {
 #define ALIGNMENT 16
 
 /* 할당할 크기인 size를 보고 8의 배수 크기로 할당하기 위해 size를 다시 align하는 작업을 한다. 만약 size가 4이면 (4+8-1) = 11 = 0000 1011 이고
-이를 ~0x7 = 1111 1000과 AND 연한하면 0000 1000 = 8이 되어 적당한 8의 배수 크기로 align할 수 있다.*/
-#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0xF)
+이를 ~0xF = 1111 1000과 AND 연한하면 0000 1000 = 8이 되어 적당한 16의 배수 크기로 align할 수 있다.*/
+#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
 /* 메모리 할당 시 기본적으로 header와 footer를 위해 필요한 더블워드만큼의 메모리 크기.
     long형인 size_t의 크기만큼 8을 나타내는 매크로.
